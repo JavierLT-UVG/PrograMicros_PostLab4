@@ -1,0 +1,257 @@
+ ; Archivo:	  main.s  
+ ; Dispositivo:	  PIC16F887
+ ; Autor:	  Javier L�pez
+ ; Compilador:	  pic-as (v2.30), MPLAB V5.50
+ ; 
+ ; Programa:	  Contador binario de 4 bits con botones y contador de unidades
+ ;		  y decenas de segundos utilizando displays, que se repite cada
+ ;		  1 minuto
+ ; Harware:	  Push buttons en portb, leds y resistores en porta, 
+ ;		  display de 7 seg en puerto c, display de 7 seg en puerto d
+ ; 
+ ; Creado: 16 agosto, 2021
+ ; �ltima modificaci�n: 19 agosto, 2021
+  
+ PROCESSOR 16F887
+ #include <xc.inc>
+ 
+ ;configuration word 1
+ CONFIG FOSC=INTRC_NOCLKOUT	// Oscillador Interno sin salidas
+ CONFIG WDTE=OFF    // WDT disabled (reinicio repetitivo del pic)
+ CONFIG PWRTE=OFF    // PWRT enabled (espera de 72ms al iniciar)
+ CONFIG MCLRE=OFF   // El pin de MCLR se utiliza como I/O
+ CONFIG CP=OFF	    // Sin protecci�n de c�digo
+ CONFIG CPD=OFF	    // Sin protecci�n de datos
+ 
+ CONFIG BOREN=OFF   // Sin reinicio cuando el voltaje de alimentaci�n baja de 4V
+ CONFIG IESO=OFF    // Reinicio sin cambio de reloj de interno a externo
+ CONFIG FCMEN=OFF   // Cambio de reloj externo a interno en caso de fallo
+ CONFIG LVP=OFF	    // programaci�n en bajo voltaje permitida
+ 
+ ;configuration word 2
+ CONFIG WRT=OFF		// Protecci�n de autoescritura por el programa desactivada
+ CONFIG BOR4V=BOR40V	// Reinicio abajo de 4V, (BOR21V=2.1V)
+
+ restart_tmr0 macro
+    banksel PORTA
+    movlw   99		; valor inicial para obtener saltos de 10ms
+    movwf   TMR0	; almacenar valor inicial en TMR0
+    bcf	    INTCON, 2	; limpiar bandera de overflow
+    endm
+    
+ PSECT udata_bank0 ; common memory
+    cont:		DS  2	; 2 bytes
+    display_1seg:	DS  1	; 1 byte
+    lim_display_1seg:	DS  1	; 1 byte
+    display_10seg:	DS  1	; 1 byte
+    lim_display_10seg:	DS  1	; 1 byte
+    
+ PSECT udata_shr ; common memory
+    W_TEMP:		DS  1	; 1 byte
+    STATUS_TEMP:	DS  1	; 1 byte
+    
+ ;------------------Reset--------------------
+ PSECT resVect, class=CODE, abs, delta=2
+ ORG 00h	; posici�n 0000h para el reset
+ resetVec:
+     PAGESEL main
+     goto main
+      
+ ;-------------Vector interrupcion--------------    
+ PSECT intVect, class=CODE, abs, delta=2
+ ORG 04h	; posici�n 0004h para interrupciones
+ 
+ push:
+    movwf   W_TEMP
+    swapf   STATUS, W
+    movwf   STATUS_TEMP
+    
+ isr:
+    btfsc   RBIF	; saltar si bandera de cambio de b est� apagada
+    call    int_iocb	; llamar incrementos/decrementos por botones
+
+    btfsc   T0IF	; saltar si bandera de tmr0 est� apagada
+    call    int_tmr0	; llamar a incrementos automaticos de contadores
+
+ pop:
+    swapf   STATUS_TEMP, W
+    movwf   STATUS
+    swapf   W_TEMP, F
+    swapf   W_TEMP, W
+    retfie
+    
+ ;--------------------- subrutinas de interrupcion ---------------------
+ 
+ int_iocb:		
+    banksel PORTA
+    btfss   PORTB, 0	; saltar si pin 0 de puerto b sigue en pullup
+    incf    PORTA	; incrementar puerto a cuando se apaga el pin 0
+    call    restringir_bits_pos
+    
+    btfss   PORTB, 7	; saltar si pin 7 de puerto b sigue en pullup
+    decf    PORTA	; decrementar puerto a cuando se apaga el pin 7
+    call    restringir_bits_neg
+    
+    bcf	    RBIF	; limpiar bandera al terminar interrupcion
+    return
+ 
+ int_tmr0:
+    restart_tmr0 	; 10ms
+    incf    cont
+    movf    cont, w
+    sublw   100		; repetir 100 veces (1000ms = 1s)
+    btfss   STATUS, 2   ; saltar si el resultado de la operacion anterior es 0
+    goto    enviar_a_return
+    clrf    cont	; limpiar contador al cumplir su ciclo
+    incf    display_1seg
+    return
+ enviar_a_return:
+    return
+ 
+ PSECT code, delta=2, abs
+ ;------------------------------- tabla ----------------------------------   
+ ORG 100h  
+ tabla:
+    clrf    PCLATH
+    bsf	    PCLATH, 0 
+    addwf   PCL	    
+    retlw   00111111B	;0
+    retlw   00000110B	;1
+    retlw   01011011B	;2
+    retlw   01001111B	;3
+    retlw   01100110B	;4
+    retlw   01101101B	;5
+    retlw   01111101B	;6
+    retlw   00000111B	;7
+    retlw   01111111B	;8
+    retlw   01100111B	;9
+    retlw   01110111B	; A
+
+ ;-------------configuraci�n------------------
+ main:
+    call    config_io
+    call    config_reloj
+    call    config_tmr0
+    call    config_int_enable
+    call    config_iocrb
+    
+    banksel PORTA
+    
+ ;-------------loop principal-----------------
+ loop:
+    call    var_a_display1  ; convertir valor de tabla a display de 1 seg
+    call    var_a_display10 ; convertir valor de tabla a display de 10 seg
+    goto    loop
+ ;-------------sub rutinas--------------------
+ 
+ ;-------------------------- configurar io -------------------------------
+ config_io:		    ; entradas y salidas
+    banksel ANSEL
+    clrf    ANSEL
+    clrf    ANSELH	    ; pines digitales
+    
+    banksel TRISA
+    clrf    TRISA	    ; puerto a como salida
+    clrf    TRISC	    ; puerto c como salida
+    clrf    TRISD	    ; puerto d como salida
+    
+    bsf	    TRISB, 0	    ; puerto b en 0 como entrada
+    bsf	    TRISB, 7	    ; puerto b en 7 como entrada
+    bcf	    OPTION_REG, 7   ; activar pullups de puerto b
+    bsf	    WPUB, 0	    ; encender pullup de puerto b en 0
+    bsf	    WPUB, 7	    ; encender pullup de puerto b en 0
+    
+    banksel PORTA
+    clrf    PORTA	    ; limpiar puerto a
+    clrf    PORTC	    ; limpiar puerto c
+    clrf    PORTD	    ; limpiar puerto d
+    return
+
+ ;-------------------------- configurar reloj -------------------------------
+ config_reloj:		    ; configurar velocidad de oscilador
+    banksel OSCCON
+    bsf	    OSCCON, 6
+    bcf	    OSCCON, 5
+    bcf	    OSCCON, 4	    ; 100, (1MHz)
+    bsf	    OSCCON, 0	    ; seleccionar reloj interno
+    return
+ 
+ ;-------------------------- configurar TMR0 -------------------------------
+ config_tmr0:		    ; configurar interrupcion de tmr0
+    banksel TRISA
+    bcf	    OPTION_REG, 5   ; seleccionar reloj interno
+    bcf	    OPTION_REG, 3   ; activar prescaler
+    bcf	    OPTION_REG, 2   
+    bsf	    OPTION_REG, 1   
+    bsf	    OPTION_REG, 0   ; prescaler 011, (x16) 
+    return
+ 
+ ;---------------------- config interrupciones -----------------------------
+ config_int_enable:	    ; habilitar interrupciones
+    bsf	    GIE		    ; habilitar interrupciones globales
+    bsf	    RBIE	    ; habilitar interrupciones de puerto b
+    bcf	    RBIF	    ; limpiar bandera de puerto b
+    bsf	    T0IE	    ; habilitar interrupciones de tmr0
+    bcf	    T0IF	    ; limpiar bandera de tmr0
+    return
+ config_iocrb:		    ; configurar pines de interrupcion
+    banksel TRISA
+    bsf	    IOCB, 0	    ; activar interrupcion al cambio en pin 0 de puertob
+    bsf	    IOCB, 7	    ; activar interrupcion al cambio en pin 7 de puertob
+    banksel PORTB	
+    movf    PORTB, W	
+    bcf	    RBIF	    ; terminar mismatch
+    return
+    
+ ;----------------restringir a 4 bits el contador de botones-----------------
+ restringir_bits_pos:
+    btfsc   PORTA, 4	    ; limpiar al pasar 4 bits
+    clrf    PORTA
+    return
+ restringir_bits_neg:
+    btfsc   PORTA, 7	    ; activar 4 bits al ir al reversa
+    call    todo_set_a
+    return 
+ todo_set_a:
+    clrf    PORTA
+    bsf	    PORTA, 0
+    bsf	    PORTA, 1
+    bsf	    PORTA, 2
+    bsf	    PORTA, 3
+    return
+
+ ;------------------------ variables a displays ---------------------------
+ var_a_display1:
+    movf    display_1seg, w
+    call    tabla		; convertir contador de 1 seg a tabla
+    movwf   PORTD		; mover tabla a display de puerto d
+    call    restringir_display1
+    return
+    
+ restringir_display1:
+    movf    display_1seg, w	; mover variable de restriccion a w
+    sublw   10			; restar 10 con la variable de restriccion (10s)
+    btfss   STATUS, 2		; si la diferencia anterior es 0, salta
+    goto    enviar_return1
+    incf    display_10seg	; incrementar display 10 seg
+    clrf    display_1seg	; empezar cuenta de nuevo del display de 1 seg
+ enviar_return1:
+    return
+    
+ var_a_display10:
+    movf    display_10seg, w	
+    call    tabla		; convertir contador de 10 seg a tabla
+    movwf   PORTC		; mover tabla a display de puerto c
+    call    restringir_display10    
+    return
+    
+ restringir_display10:
+    movf    display_10seg, w	; mover variable de restriccion a w
+    sublw   6			; restar 6 con la variable de restriccion (60s)
+    btfss   STATUS, 2		; si la diferencia anterior es 0, salta
+    goto    enviar_return2	
+    clrf    display_10seg	; empezar cuenta de nuevo del display de 60 seg 
+ enviar_return2:
+    return
+    
+ END
